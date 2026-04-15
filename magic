@@ -1,0 +1,139 @@
+import time
+import os
+import shutil
+import whisper
+import threading
+import google.generativeai as genai
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+from queue import Queue
+
+# --- CONFIGURATION ---
+# Retrieve the API key from environment variables for security
+# On Mac, set it in the terminal using: export GEMINI_API_KEY='your_key'
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "INSERT_YOUR_KEY_HERE_IF_NOT_USING_ENV") 
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Dynamic folder configuration
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+INPUT_DIR = os.path.join(BASE_DIR, "To_Transcribe")
+OUTPUT_DIR = os.path.join(BASE_DIR, "Completed")
+NOTES_DIR = os.path.join(BASE_DIR, "Formatted_Notes")
+
+# Create folders if they do not exist
+for folder in [INPUT_DIR, OUTPUT_DIR, NOTES_DIR]:
+    os.makedirs(folder, exist_ok=True)
+
+file_queue = Queue()
+transcribed_files = 0
+
+def format_with_gemini(raw_text):
+    """Passes the raw text to Gemini for professional editing."""
+    print("    [Gemini] Cleaning and formatting text...")
+    
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    system_prompt = """
+    You are a professional editor and copywriter specializing in transcriptions. 
+    Your task is to take a raw audio transcription and transform it into a clean, organized, and perfectly readable document in Markdown format.
+    
+    FUNDAMENTAL RULES:
+    1. ABSOLUTE FIDELITY: Do not summarize, do not cut concepts, do not omit details. Everything that is said must be present.
+    2. CLEANING THE SPEECH: Eliminate fillers ("um", "like", "you know"), false starts, and stuttering. Make the sentences grammatically correct and fluid, transforming spoken language into elegant written language.
+    3. ORGANIZATION: 
+       - Start with a descriptive H1 Title.
+       - Divide the text into logical paragraphs and use H2 Titles to separate different topics or shifts in conversation.
+       - Use bullet points only if the speaker is objectively listing items.
+    4. READABILITY: Highlight key concepts or terms in **bold** to facilitate visual scanning.
+    5. LANGUAGE: Strictly maintain the output in the original language of the audio transcription.
+    
+    Here is the raw transcription to edit and format:
+    """
+    
+    try:
+        response = model.generate_content(system_prompt + raw_text)
+        return response.text
+    except Exception as e:
+        return f"Gemini API Error: {e}\n\nOriginal Text:\n{raw_text}"
+
+def wait_for_copy_completion(file_path, timeout=120):
+    previous_size = -1
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if not os.path.exists(file_path): return False
+        try:
+            current_size = os.path.getsize(file_path)
+            if current_size == previous_size and current_size > 0:
+                time.sleep(1)
+                if os.path.getsize(file_path) == current_size: return True
+            previous_size = current_size
+        except OSError: pass
+        time.sleep(1)
+    return False
+
+class AudioFileHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        if event.is_directory: return
+        file_name = os.path.basename(event.src_path)
+        if file_name.startswith('.'): return
+        
+        valid_extensions = ['.m4a', '.mp3', '.wav', '.mp4', '.ogg', '.flac']
+        if any(file_name.lower().endswith(ext) for ext in valid_extensions):
+            print(f"[+] Detected new file: {file_name}")
+            file_queue.put(event.src_path)
+
+def transcription_worker():
+    print("Loading Whisper engine (medium model)...")
+    try:
+        whisper_model = whisper.load_model("medium")
+        print("System ready and listening.")
+    except Exception as e:
+        print(f"Error loading Whisper: {e}"); return
+
+    while True:
+        file_path = file_queue.get()
+        file_name = os.path.basename(file_path)
+        global transcribed_files
+        
+        if os.path.exists(file_path) and wait_for_copy_completion(file_path):
+            try:
+                print(f"    [Whisper] Transcribing: {file_name}")
+                result = whisper_model.transcribe(file_path, fp16=False)
+                
+                base_name = os.path.splitext(file_name)[0]
+                raw_text_path = os.path.join(OUTPUT_DIR, f"{base_name}_raw.txt")
+                notes_path = os.path.join(NOTES_DIR, f"{base_name}.md")
+                finished_audio_path = os.path.join(OUTPUT_DIR, file_name)
+                
+                with open(raw_text_path, "w", encoding="utf-8") as f:
+                    f.write(result["text"])
+                
+                formatted_notes = format_with_gemini(result["text"])
+                with open(notes_path, "w", encoding="utf-8") as f:
+                    f.write(formatted_notes)
+                
+                shutil.move(file_path, finished_audio_path)
+                transcribed_files += 1
+                print(f"    V Completed successfully.\n")
+            except Exception as e:
+                print(f"    X Error during processing: {e}")
+        file_queue.task_done()
+
+def process_existing_files():
+    valid_extensions = ['.m4a', '.mp3', '.wav', '.mp4', '.ogg', '.flac']
+    if os.path.exists(INPUT_DIR):
+        for f in os.listdir(INPUT_DIR):
+            if not f.startswith('.') and any(f.lower().endswith(ext) for ext in valid_extensions):
+                file_queue.put(os.path.join(INPUT_DIR, f))
+
+if __name__ == "__main__":
+    threading.Thread(target=transcription_worker, daemon=True).start()
+    process_existing_files()
+    observer = Observer()
+    observer.schedule(AudioFileHandler(), INPUT_DIR, recursive=False)
+    observer.start()
+    try:
+        while True: time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
