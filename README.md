@@ -3,7 +3,7 @@
 An automated tool for local audio transcription and intelligent text formatting, designed for students, researchers, and design professionals.
 
 ## Project Vision
-MagicTranscript was born from the need to transform raw audio recordings (lectures, user interviews, workshops) into clean, organized, and ready-to-use text documents without losing the fidelity of the original content. 
+Whisperer was born from the need to transform raw audio recordings (lectures, user interviews, workshops) into clean, organized, and ready-to-use text documents without losing the fidelity of the original content. 
 
 The tool combines the power of local transcription via **OpenAI Whisper** with the editing intelligence of **Google Gemini AI**.
 
@@ -23,5 +23,5 @@ The system operates as a background "Folder Watcher":
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/your-username/MagicTranscript.git](https://github.com/your-username/MagicTranscript.git)
-   cd MagicTranscript
+   git clone [https://github.com/your-username/Whisperer.git](https://github.com/your-username/Whisperer.git)
+   cd Whisperer
